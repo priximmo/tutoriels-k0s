@@ -1,0 +1,27 @@
+apiVersion: k0sctl.k0sproject.io/v1beta1
+kind: Cluster
+metadata:
+  name: k0s-cluster
+spec:
+  hosts:
+  - ssh:
+      address: 192.168.15.120
+      user: vagrant
+      port: 22
+      keyPath: ~/.ssh/mke
+    role: controller
+    privateInterface: enp0s8
+  - ssh:
+      address: 192.168.15.111
+      user: vagrant
+      port: 22
+      keyPath: ~/.ssh/mke
+    role: worker
+    privateInterface: enp0s8
+  - ssh:
+      address: 192.168.15.112
+      user: vagrant
+      port: 22
+      keyPath: ~/.ssh/mke
+    role: worker
+    privateInterface: enp0s8
