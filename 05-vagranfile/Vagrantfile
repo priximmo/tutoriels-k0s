@@ -1,0 +1,112 @@
+Vagrant.configure(2) do |config|
+
+	etcHosts = ""
+	config.cache.auto_detect = true
+
+  case ARGV[0]
+    when "provision", "up"
+    print "Do you want to install K0S ([y]/n) ?\n"
+    k0s = STDIN.gets.chomp
+    print "\n"
+  end
+
+  # some settings for common server
+  common = <<-SHELL
+  sudo apt update -qq 2>&1 >/dev/null
+  sudo apt install -y -qq git vim tree net-tools telnet git python3-pip sshpass nfs-common 2>&1 >/dev/null
+  sudo echo "autocmd filetype yaml setlocal ai ts=2 sw=2 et" > /home/vagrant/.vimrc
+  sed -i 's/ChallengeResponseAuthentication no/ChallengeResponseAuthentication yes/g' /etc/ssh/sshd_config
+  sudo systemctl restart sshd
+  SHELL
+
+  # ssh generation
+
+  sshgen = <<-SHELL
+  sudo su - vagrant bash -c "ssh-keygen -b 2048 -t rsa -f /home/vagrant/.ssh/id_rsa_k0s -q -N ''"
+  for srv in $(cat /etc/hosts | awk '{print $2}');do
+    cat /home/vagrant/.ssh/id_rsa_k0s.pub | sshpass -p 'vagrant' ssh -o StrictHostKeyChecking=no vagrant@$srv -T 'tee -a >> /home/vagrant/.ssh/authorized_keys'
+  done
+  SHELL
+
+  installK0s = <<-SHELL
+  wget -q https://github.com/k0sproject/k0sctl/releases/download/v0.11.4/k0sctl-linux-x64 -P /usr/local/bin/  2>&1 >/dev/null
+  mv /usr/local/bin/k0sctl-linux-x64 /usr/local/bin/k0sctl
+  chmod +x /usr/local/bin/k0sctl
+  k0sctl apply --config k0sctl.yaml
+  SHELL
+
+  installKubectl = <<-SHELL
+    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+    echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee -a /etc/apt/sources.list.d/kubernetes.list
+    apt-get update -qq 2>&1 >/dev/null
+    apt-get install -qq -y kubectl 2>&1 >/dev/null
+    mkdir -p /home/vagrant/.kube
+    chown -R vagrant /home/vagrant/.kube
+    k0sctl kubeconfig > /home/vagrant/.kube/config
+    k0sctl kubeconfig > /vagrant/config
+  SHELL
+
+  # set vagrant image
+  config.vm.box = "ubuntu/focal64"
+  config.vm.box_url = "ubuntu/focal64"
+
+  # set servers list and their parameters
+  NODES = [
+    { :hostname => "k0sworker1", :ip => "192.168.15.211", :cpus => 2, :mem => 2048, :type => "worker" },
+    { :hostname => "k0sworker2", :ip => "192.168.15.212", :cpus => 2, :mem => 2048, :type => "worker" },
+    { :hostname => "k0smaster", :ip => "192.168.15.220", :cpus => 2, :mem => 2048, :type => "controller" },
+  ]
+
+  # define /etc/hosts for all servers
+  NODES.each do |node|
+    etcHosts += "echo '" + node[:ip] + "   " + node[:hostname] + "' >> /etc/hosts" + "\n"
+  end #end NODES
+
+  configK0s = " echo '
+apiVersion: k0sctl.k0sproject.io/v1beta1
+kind: Cluster
+metadata:
+  name: k0s-cluster
+spec:
+  hosts:' > /home/vagrant/k0sctl.yaml"
+
+  # create config for each node
+  NODES.each do |node|
+    configK0s += "
+echo '
+  - ssh:
+      address: " + node[:ip] + "
+      user: vagrant
+      port: 22
+      keyPath: /home/vagrant/.ssh/id_rsa_k0s
+    role: " + node[:type] + "
+    privateInterface: enp0s8
+    ' >> /home/vagrant/k0sctl.yaml"
+  end #end NODES
+
+  # run installation
+  NODES.each do |node|
+    config.vm.define node[:hostname] do |cfg|
+      cfg.vm.hostname = node[:hostname]
+      cfg.vm.network "private_network", ip: node[:ip]
+      cfg.vm.provider "virtualbox" do |v|
+        v.customize [ "modifyvm", :id, "--cpus", node[:cpus] ]
+        v.customize [ "modifyvm", :id, "--memory", node[:mem] ]
+      end #end provider
+
+      #for all
+      cfg.vm.provision :shell, :inline => etcHosts
+
+      # for all servers in cluster
+      cfg.vm.provision :shell, :inline => common
+
+      if node[:type] == "controller" and k0s != "n"
+        cfg.vm.provision :shell, :inline => sshgen
+        cfg.vm.provision :shell, :inline => configK0s
+        cfg.vm.provision :shell, :inline => installK0s
+        cfg.vm.provision :shell, :inline => installKubectl
+      end
+    end # end config
+  end # end nodes
+
+end #final loop ended
